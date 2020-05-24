@@ -1,0 +1,11 @@
+Notes about the code....
+
+One thing I changed was how I handled erratic points. The paper specified the following: "To retain the most stable features we find
+the maximum distance (rounded to the nearest pixel) traveled by each point between consecutive frames and discard
+points with a distance exceeding the mode of the distribution." I wasn't sure what distribution it was referring to, so I came
+up with my own method of dealing with erratic points. I just removed points with large standard deviations.
+B
+
+Toggleable items
+"if max_z > 1.5:": The threshold value here determines the z score limit for which we allow feature points
+

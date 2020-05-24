@@ -1,6 +1,9 @@
 import cv2 as cv
 import numpy as np
 import sys
+from scipy import signal
+from scipy import stats
+from matplotlib import pyplot as plt
 
 class PFHM:
     def __init__(self, path):
@@ -105,7 +108,20 @@ class PFHM:
         out = cv.calcOpticalFlowPyrLK(im1, im2, corner_a, None, (win_size, win_size), 5, **crit_flow)
         corner_b, feature_found, feature_error = out
         return im1, im2, corner_b
-#    def interpolation():
+    
+    def _diffAdjacent(self, data):
+        diff = [data[i]-data[i-1] for i in range(1,len(data))]
+        diff = np.array(diff)
+        return diff.astype(int)
+    
+    def removeOutliers(self, data):
+        for row in data:
+            diff = self._diffAdjacent(data)
+            max_z = np.amax(stats.zscore(diff))
+            if max_z > 1.5:
+                np.delete(data, row, 0)
+                print("Point deleted")   
+        return data         
         
         
 def main():
@@ -121,7 +137,7 @@ def main():
     while(cap.isOpened()):
         face_frame = []
         ret, frame = cap.read()
-        if frame.any():
+        if frame.any() and counter < 200:
             frame = pfhm.process_image(frame, 2)
             face = np.array([0, 0, 10, 10])
             frame, face, face_frame = pfhm.find_face(frame, face, face_frame)
@@ -155,14 +171,17 @@ def main():
         np.transpose(curr)
         data.append(curr)
     origin = np.transpose(data)
+    plt.plot(origin[0])
+    plt.show()
+    print("Origin shape before removing outliers: ", origin.shape)
+    origin = pfhm.removeOutliers(origin)
+    print("Origin shape: ", origin.shape)
     print("Reached 139")
     fr = 250/30.
     size_origin = (int(origin.shape[0]*fr), origin.shape[1])
     processed = [cv.resize(row, size_origin, cv.INTER_CUBIC) for row in origin]
-    print(np.ndim(data))
-    print(data)
     
-    cv.imshow(WINDOW_NAME, data)
-    cv.waitKey()
+    
 if __name__ == "__main__":
     main()
+    
