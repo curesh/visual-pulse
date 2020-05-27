@@ -4,6 +4,8 @@ import sys
 from scipy import signal
 from scipy import stats
 from matplotlib import pyplot as plt
+import json
+import sys
 
 class PFHM:
     def __init__(self, path):
@@ -99,9 +101,9 @@ class PFHM:
         # im1 = cv.cvtColor(im1, cv.COLOR_BGR2GRAY)
         corner_a = cv.goodFeaturesToTrack(im1, max_corners, 0.05, 5.0)
         # MAYBE YOU SHOULD | THE TERM CRITERIA INSTEAD OF +
-        crit_flow = dict( criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_COUNT,
+        crit_flow = dict( criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT,
                                      30, 0.001))
-        crit_pix = dict( criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_COUNT,
+        crit_pix = dict( criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT,
                                      30, 0.01))
         cv.cornerSubPix(im1, corner_a, (win_size, win_size), (-1, -1), **crit_pix)
                         
@@ -110,21 +112,36 @@ class PFHM:
         return im1, im2, corner_b
     
     def _diffAdjacent(self, data):
-        diff = [data[i]-data[i-1] for i in range(1,len(data))]
+        diff = [int(data[i]-data[i-1]) for i in range(1,len(data))]
         diff = np.array(diff)
         return diff.astype(int)
-    
+        
     def removeOutliers(self, data):
-        for row in data:
-            diff = self._diffAdjacent(data)
-            max_z = np.amax(stats.zscore(diff))
-            if max_z > 1.5:
-                np.delete(data, row, 0)
-                print("Point deleted")   
-        return data         
+        total_diff = []
+        for i, row in enumerate(data):
+            diff_sing = self._diffAdjacent(row)
+            total_diff.append(diff_sing)
+        total_diff = np.array(total_diff)
+        mode_diff, mode_count = stats.mode(total_diff)
+        print("Mode count: ", mode_count)
+        print("Mode value: ", mode_diff)
+        print("Sample feature points row: ", data[0])
+        mode_diff = np.squeeze(mode_diff)
+        deleted = np.copy(data)
+        for i, row in enumerate(total_diff):
+            if np.amax(row) > mode_diff[0]:
+                deleted = np.delete(deleted, data[i], 0)
+                print("removing outlier")
+        return deleted
         
         
 def main():
+    numFrames = 500
+    #Json file data
+    with open('sample/07-01.json') as f:
+        data = json.load(f)
+    arr_data = [data["/FullPackage"][i]['Value']['waveform'] for i in range(len(data["/FullPackage"]))]
+    
     pfhm = PFHM("resources/haarcascade_frontalface_default.xml")
     WINDOW_NAME="Pulse from Head Motion"; 
     cv.namedWindow(WINDOW_NAME, cv.WINDOW_AUTOSIZE)
@@ -137,7 +154,7 @@ def main():
     while(cap.isOpened()):
         face_frame = []
         ret, frame = cap.read()
-        if frame.any() and counter < 200:
+        if frame.any() and counter < numFrames:
             frame = pfhm.process_image(frame, 2)
             face = np.array([0, 0, 10, 10])
             frame, face, face_frame = pfhm.find_face(frame, face, face_frame)
@@ -167,19 +184,93 @@ def main():
         curr = []
         for j in range (len(corners[i])):
             curr.append(corners[i][j][1])
-        print("Processed :", i)
         np.transpose(curr)
         data.append(curr)
     origin = np.transpose(data)
-    plt.plot(origin[0])
-    plt.show()
+
     print("Origin shape before removing outliers: ", origin.shape)
-    origin = pfhm.removeOutliers(origin)
-    print("Origin shape: ", origin.shape)
-    print("Reached 139")
-    fr = 250/30.
-    size_origin = (int(origin.shape[0]*fr), origin.shape[1])
-    processed = [cv.resize(row, size_origin, cv.INTER_CUBIC) for row in origin]
+    #origin = pfhm.removeOutliers(origin)
+    fr = 60/30.
+    size_origin = (int(origin.shape[1]*fr), origin.shape[0])
+    processed = cv.resize(origin, size_origin, cv.INTER_CUBIC)
+    
+    #Filter out 0.8 to 3 Hz using butterworth 5th order filter
+    nyquist_freq = 15
+    print("Processed shape: ", processed.shape)
+    b, a = signal.butter(5, [0.75/nyquist_freq, 5/nyquist_freq], 'bandpass')
+    filtered = np.array([signal.filtfilt(b, a, row) for row in processed])
+    print("Shape filtered out: ", filtered.shape)
+    # plt.plot(filtered[0])
+    # plt.show()
+    
+    #remove 25% percent of features with the largest vector norms.
+    norm_filtered = np.prod(filtered, 0)
+    indices_sort = sorted(range(len(norm_filtered)), key=lambda i: norm_filtered[i])
+    limit = int(0.25*len(norm_filtered))
+    clean_filtered = np.copy(filtered)
+    indices_sort = np.array(indices_sort)
+    print("indices_sort: ", indices_sort.shape)
+    print("clean filtered shape: ", clean_filtered.shape)
+    print("Norm filtered shape: ", norm_filtered.shape)
+    for enum, i in enumerate(reversed(indices_sort)):
+        if limit < enum:
+            print("Breaking!!!", enum, " ")
+            break
+        delete_check = filtered[:,i]
+        print(delete_check.shape)
+        clean_filtered = np.delete(clean_filtered, filtered[:,i], 1)
+        print("loop clean shape: ", clean_filtered.shape)
+    print(clean_filtered.shape)
+    mean = np.empty((0))
+    mean, eigenvectors = cv.PCACompute(clean_filtered, mean)
+    print("eigan shape: ", eigenvectors.shape)
+    filtered = np.transpose(filtered)
+    
+    
+    plt.figure(1)
+    s = []
+    for i in range(5):
+        s.append(filtered.dot(eigenvectors[:,i]))
+        # plot_num = 611+i
+        # plt.subplot(plot_num)
+        # plt.plot(s[i])
+    # plt.subplot(616)
+    # plt.plot(arr_data[0:numFrames*2])
+    # plt.show()
+    #print("test shape", test.shape)
+    # plt.figure(2)
+    max_freqs = []
+    freq_pulses = []
+    for i in range(5):
+        f, Pxx_den = signal.periodogram(s[i], 30)
+        freq_pulses.append((f, Pxx_den))
+        # plot_num = 511+i
+        # plt.subplot(plot_num)
+        # plt.plot(f, Pxx_den)
+        print(i, ": ", f.shape)
+        tot_freq = sum(Pxx_den)
+        max_freqs.append((np.amax(Pxx_den)/tot_freq, np.argmax(Pxx_den)))
+    best_index = (0, max_freqs[0][0])
+    #This for loop is to find the element in the 5 element s array that is most periodic
+    for i in range(1, len(max_freqs)):
+        if max_freqs[i][0] > best_index[1]:
+            best_index = (i, max_freqs[i][0])
+    f_pulse = freq_pulses[best_index[0]][0][max_freqs[best_index[0]][1]]
+    print("F_pulse: ", f_pulse)
+    print("BPM: ", 60/f_pulse)
+    peaks, _ = signal.find_peaks(s[best_index[0]], distance = int(60/f_pulse))
+    plt.figure(1)
+    plt.subplot(211)
+    plt.plot(s[best_index[0]])
+    plt.plot(peaks, s[best_index[0]][peaks], "x")
+    plt.subplot(212)
+    plt.plot(arr_data[0:numFrames*2])
+    
+    plt.show()
+
+    #part 3
+    # plt.plot(test)
+    # plt.show()
     
     
 if __name__ == "__main__":
