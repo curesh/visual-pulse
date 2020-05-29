@@ -8,6 +8,7 @@ import json
 import sys
 
 class PFHM:
+    
     def __init__(self, path):
         self.fn_haar = path
         self.haar_cascade = cv.CascadeClassifier(path)
@@ -48,6 +49,7 @@ class PFHM:
         cv.putText(img, box_text, (pos_x, pos_y), cv.FONT_HERSHEY_PLAIN,
                    1, (0, 255, 0), 2)
         return img
+    
     def _draw_points(self, img, corners, face):
         corners = np.array(corners)
         for point in corners:
@@ -96,9 +98,8 @@ class PFHM:
                 max_face = w*h
                 n = iter
         return n
+    
     def perform_LKfilter(self, im1, im2, corner_b, win_size, max_corners):
-        # im2 = cv.cvtColor(im2, cv.COLOR_BGR2GRAY)
-        # im1 = cv.cvtColor(im1, cv.COLOR_BGR2GRAY)
         corner_a = cv.goodFeaturesToTrack(im1, max_corners, 0.05, 5.0)
         # MAYBE YOU SHOULD | THE TERM CRITERIA INSTEAD OF +
         crit_flow = dict( criteria = (cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT,
@@ -133,15 +134,45 @@ class PFHM:
                 deleted = np.delete(deleted, data[i], 0)
                 print("removing outlier")
         return deleted
-        
-        
+    
+    def butter_filter(self, data, fs):
+        nyquist_freq = fs/2
+        print("Processed shape: ", data.shape)
+        b, a = signal.butter(5, [0.75/nyquist_freq, 5/nyquist_freq], 'bandpass')
+        filtered = np.array([signal.filtfilt(b, a, row) for row in data])
+        return filtered
+    
+    def prune_largest(self, data):
+        norm_filtered = np.prod(data, 0)
+        indices_sort = sorted(range(len(norm_filtered)), key=lambda i: norm_filtered[i])
+        limit = int(0.25*len(norm_filtered))
+        clean_filtered = np.copy(data)
+        indices_sort = np.array(indices_sort)
+        print("indices_sort: ", indices_sort.shape)
+        print("clean filtered shape: ", clean_filtered.shape)
+        print("Norm filtered shape: ", norm_filtered.shape)
+        for enum, i in enumerate(reversed(indices_sort)):
+            if limit < enum:
+                print("Breaking!!!", enum, " ")
+                break
+            delete_check = data[:,i]
+            print(delete_check.shape)
+            clean_filtered = np.delete(clean_filtered, data[:,i], 1)
+            print("loop clean shape: ", clean_filtered.shape)
+        return clean_filtered
+    
 def main():
-    numFrames = 500
+    #This variable is used to determine the number of video frames we are analysing
+    numFrames = 50
+    fs_vid = 30 #Hz
+    
     #Json file data
     with open('sample/07-01.json') as f:
         data = json.load(f)
     arr_data = [data["/FullPackage"][i]['Value']['waveform'] for i in range(len(data["/FullPackage"]))]
+    fs_json = 60
     
+    # Init variables for the opencv video program
     pfhm = PFHM("resources/haarcascade_frontalface_default.xml")
     WINDOW_NAME="Pulse from Head Motion"; 
     cv.namedWindow(WINDOW_NAME, cv.WINDOW_AUTOSIZE)
@@ -151,25 +182,41 @@ def main():
     counter = 0
     cap  = cv.VideoCapture('sample/07-01.mp4')
     corners = []
+    
+    # While loop that looks through some number of video frames to get
+    # the necessary feature points as a function of time, from each frame
     while(cap.isOpened()):
         face_frame = []
         ret, frame = cap.read()
         if frame.any() and counter < numFrames:
+            # Here we process the image 
             frame = pfhm.process_image(frame, 2)
             face = np.array([0, 0, 10, 10])
+            
+            # The face variable is a rectangle that has the dimensions for the face
+            # we care about. The face_frame is a matrix containing all of the image
+            # that is within the rectangle (face)
             frame, face, face_frame = pfhm.find_face(frame, face, face_frame)
-            # cv.imshow(str(WINDOW_NAME), face_frame)
             if counter == 0:
                 saved_frame = face_frame
                 saved_size = (saved_frame.shape[:2])[::-1]
             else:
                 corner_b = []
+                
+                # Here we make sure to keep the face we are looking at, constant across
+                # all the video frames that we are analyzing
                 face_frame = cv.resize(face_frame, saved_size, 0, 0, cv.INTER_LINEAR)
+                
+                # Uses the lucas kannade feature finding algorithm to track features from
+                # frame to frame
                 saved_frame, face_frame, corner_b = pfhm.perform_LKfilter(saved_frame, face_frame, corner_b, 15, 200)
                 corner_b = np.array(corner_b)
                 for point in corner_b:
+                    # This function is used to draw the feature points on the image
+                    # that is being shown (for debugging purposes)
                     pfhm._draw_points(face_frame, point, face)
                 corners.append(np.squeeze(corner_b))
+                
             cv.imshow(str(WINDOW_NAME), face_frame)
             counter += 1
         else:
@@ -177,6 +224,9 @@ def main():
         if cv.waitKey(5) == 27:
             #cv.destroyWindow(str(WINDOW_NAME))
             cap.release()
+    
+    # The following code is to get the feature points in a custom matrix
+    # that we want
     corners = np.array(corners)
     print(corners.shape)
     data = []
@@ -188,39 +238,25 @@ def main():
         data.append(curr)
     origin = np.transpose(data)
 
+    # Here, we remove the outlier feature points
+    # NOTE THAT THIS IS PROBABLY THE REASON WHY THE CODE DOESN'T WORK
     print("Origin shape before removing outliers: ", origin.shape)
-    #origin = pfhm.removeOutliers(origin)
-    fr = 60/30.
+    origin = pfhm.removeOutliers(origin)
+    fr = fs_json/fs_vid
     size_origin = (int(origin.shape[1]*fr), origin.shape[0])
     processed = cv.resize(origin, size_origin, cv.INTER_CUBIC)
     
+    
     #Filter out 0.8 to 3 Hz using butterworth 5th order filter
-    nyquist_freq = 15
-    print("Processed shape: ", processed.shape)
-    b, a = signal.butter(5, [0.75/nyquist_freq, 5/nyquist_freq], 'bandpass')
-    filtered = np.array([signal.filtfilt(b, a, row) for row in processed])
+    filtered = pfhm.butter_filter(processed, fs_vid)
     print("Shape filtered out: ", filtered.shape)
     # plt.plot(filtered[0])
     # plt.show()
     
     #remove 25% percent of features with the largest vector norms.
-    norm_filtered = np.prod(filtered, 0)
-    indices_sort = sorted(range(len(norm_filtered)), key=lambda i: norm_filtered[i])
-    limit = int(0.25*len(norm_filtered))
-    clean_filtered = np.copy(filtered)
-    indices_sort = np.array(indices_sort)
-    print("indices_sort: ", indices_sort.shape)
-    print("clean filtered shape: ", clean_filtered.shape)
-    print("Norm filtered shape: ", norm_filtered.shape)
-    for enum, i in enumerate(reversed(indices_sort)):
-        if limit < enum:
-            print("Breaking!!!", enum, " ")
-            break
-        delete_check = filtered[:,i]
-        print(delete_check.shape)
-        clean_filtered = np.delete(clean_filtered, filtered[:,i], 1)
-        print("loop clean shape: ", clean_filtered.shape)
+    clean_filtered = pfhm.prune_largest(filtered)
     print(clean_filtered.shape)
+    
     mean = np.empty((0))
     mean, eigenvectors = cv.PCACompute(clean_filtered, mean)
     print("eigan shape: ", eigenvectors.shape)
@@ -228,28 +264,35 @@ def main():
     
     
     plt.figure(1)
+    plt.subplot(611)
+    plt.title("5 different heart rate models based off of top 5 PCA eigenvectors")
+
     s = []
     for i in range(5):
         s.append(filtered.dot(eigenvectors[:,i]))
-        # plot_num = 611+i
-        # plt.subplot(plot_num)
-        # plt.plot(s[i])
-    # plt.subplot(616)
-    # plt.plot(arr_data[0:numFrames*2])
-    # plt.show()
-    #print("test shape", test.shape)
-    # plt.figure(2)
+        plot_num = 611+i
+        plt.subplot(plot_num)
+        plt.plot(s[i])
+    plt.subplot(616)
+    plt.plot(arr_data[0:numFrames*2])
+    plt.figure(2)
+    plt.subplot(511)
+    plt.title("Power spectrum for each generated heart rate wave")
     max_freqs = []
     freq_pulses = []
     for i in range(5):
         f, Pxx_den = signal.periodogram(s[i], 30)
         freq_pulses.append((f, Pxx_den))
-        # plot_num = 511+i
-        # plt.subplot(plot_num)
-        # plt.plot(f, Pxx_den)
+        plot_num = 511+i
+        plt.subplot(plot_num)
+        plt.plot(f, Pxx_den)
         print(i, ": ", f.shape)
         tot_freq = sum(Pxx_den)
         max_freqs.append((np.amax(Pxx_den)/tot_freq, np.argmax(Pxx_den)))
+    
+    
+    # Also I'm pretty sure this whole most periodic thing doesn't work too
+    # well either. This problem is probably linked to some previous stage not working though
     best_index = (0, max_freqs[0][0])
     #This for loop is to find the element in the 5 element s array that is most periodic
     for i in range(1, len(max_freqs)):
@@ -259,14 +302,17 @@ def main():
     print("F_pulse: ", f_pulse)
     print("BPM: ", 60/f_pulse)
     peaks, _ = signal.find_peaks(s[best_index[0]], distance = int(60/f_pulse))
-    plt.figure(1)
+    
+    plt.figure(3)
     plt.subplot(211)
+    plt.title("Most periodic heart Rate Model vs. Ground Truth")
+
     plt.plot(s[best_index[0]])
     plt.plot(peaks, s[best_index[0]][peaks], "x")
     plt.subplot(212)
     plt.plot(arr_data[0:numFrames*2])
-    
     plt.show()
+
 
     #part 3
     # plt.plot(test)
