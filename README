@@ -1,0 +1,3 @@
+Python program that tracks a subject’s heart rate through video input, by analyzing the subtle rhythmic motions of the head. Subsequently, plots the heart beat using matplotlib.
+
+Run with python3
