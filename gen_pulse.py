@@ -291,8 +291,8 @@ def main():
         max_freqs.append((np.amax(Pxx_den)/tot_freq, np.argmax(Pxx_den)))
     
     
-    # Also I'm pretty sure this whole most periodic thing doesn't work too
-    # well either. This problem is probably linked to some previous stage not working though
+    # Possible Bug: periodic componenet
+    # Because of previous bug?
     best_index = (0, max_freqs[0][0])
     #This for loop is to find the element in the 5 element s array that is most periodic
     for i in range(1, len(max_freqs)):
